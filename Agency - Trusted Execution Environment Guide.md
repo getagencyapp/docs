@@ -1,0 +1,802 @@
+# Agency Trusted Execution Environment (TEE) Guide
+
+> **Audience:** Organization and Team Administrators  
+> **Last Updated:** February 2026
+
+This comprehensive guide explains how to configure, deploy, and manage Trusted Execution Environments (TEEs) in Agency. Whether you're scaling beyond local hardware limits or securing sensitive document processing, this guide covers everything from initial setup to advanced lifecycle management.
+
+---
+
+## Table of Contents
+
+- [1. What Are TEEs and Why Do You Need Them?](#1-what-are-tees-and-why-do-you-need-them)
+- [2. What Can Admins Do With TEEs?](#2-what-can-admins-do-with-tees)
+- [3. How TEEs Work: The Complete Picture](#3-how-tees-work-the-complete-picture)
+- [4. Use Case Examples](#4-use-case-examples)
+- [5. Easy Setup: Step-by-Step Guide](#5-easy-setup-step-by-step-guide)
+- [6. Advanced Configuration](#6-advanced-configuration)
+- [7. Managing the TEE Lifecycle](#7-managing-the-tee-lifecycle)
+- [8. What End Users Experience](#8-what-end-users-experience)
+- [9. Cost Management](#9-cost-management)
+- [10. IAM Permissions Reference](#10-iam-permissions-reference)
+- [11. Troubleshooting](#11-troubleshooting)
+- [12. FAQ](#12-faq)
+
+---
+
+## 1. What Are TEEs and Why Do You Need Them?
+
+A **Trusted Execution Environment (TEE)** is a hardware-isolated secure enclave where your data is processed. Think of it as a "black box" that runs in your cloud account—even the cloud provider (AWS, Azure, or GCP) cannot see what's inside.
+
+Agency uses TEEs to provide:
+
+| Capability | Description |
+|------------|-------------|
+| **Infinite RAM** | Offload vector indexes and knowledge graphs when they exceed local memory limits |
+| **Hardware Security** | Process sensitive documents in encrypted memory that cloud providers cannot access |
+| **Direct Ingestion** | Securely ingest documents from your existing storage buckets without downloading to local devices |
+| **Private Inference** | Run LLM inference inside the TEE—queries and responses never leave encrypted memory |
+| **Team Collaboration** | Share large indexed datasets across team members without syncing gigabytes to each device |
+
+### How TEE Security Works
+
+```
+YOUR DESKTOP APP (Trusted)              YOUR CLOUD ACCOUNT
+------------------------               ---------------------------------
++--------------------+                 +-------------------------------+
+| Agency App         |     TLS +       |  TEE Instance                 |
+|                    | <------------>  |  +---------------------------+ |
+| - Encrypts data    |   Attestation   |  | Hardware-Encrypted RAM    | |
+| - Verifies         |                 |  |                           | |
+|   attestation      |                 |  |  Qdrant vectors           | |
+| - Holds Team Key   |                 |  |  Neo4j knowledge graph    | |
+|   locally          |                 |  |  Document processing      | |
++--------------------+                 |  +---------------------------+ |
+                                       +-------------------------------+
+Agency cloud NEVER                      Cloud provider cannot
+has access to your Team Key             see inside TEE memory
+```
+
+### 1.1 When Your Team Might Need TEEs
+
+| Scenario | Recommendation |
+|----------|----------------|
+| **50GB+ of documents** | Consider TEE for better performance |
+| **100GB+ of documents** | Strongly recommended |
+| **500GB+ of documents** | Required (local hardware insufficient) |
+| **Compliance requirements** | Use TEE for hardware-attested security |
+| **Multi-user teams** | Share large indexes without syncing to each device |
+| **Files already in cloud storage** | Use Direct Ingestion to process without downloading |
+| **Zero data on endpoints** | Use Thin-Client mode—all processing in TEE, nothing stored locally |
+
+### 1.2 When You DON'T Need TEEs
+
+| Scenario | Use Instead |
+|----------|-------------|
+| **Single user, less than 50GB** | Local processing (standalone mode) |
+| **Data must never leave device** | Local processing only |
+| **No cloud budget** | Local processing (free) |
+| **Testing/prototyping** | Local mode, enable TEE later |
+
+---
+
+## 2. What Can Admins Do With TEEs?
+
+### 2.1 Organization-Level Capabilities
+
+As an **Org Admin**, you can:
+
+| Capability | Location | Description |
+|------------|----------|-------------|
+| **Configure Cloud Providers** | Settings > Storage | Add AWS, Azure, or GCP credentials for TEE provisioning |
+| **Set TEE Policies** | Settings > Organization > TEE | Define limits, allowed regions, KMS mode |
+| **Set Maximum TEEs** | Settings > Organization > TEE | Limit total TEEs across the org |
+| **Configure KMS** | Settings > Organization > TEE | Customer-managed encryption keys |
+| **View Cost Dashboard** | Settings > Organization > Costs | Track TEE compute and storage costs |
+| **Manage BYOS Storage** | Settings > Storage | Configure bring-your-own-storage buckets |
+| **Set Attestation Mode** | Settings > Organization > TEE | Cloud vendor vs multi-root attestation |
+| **Enable Disaster Recovery** | Settings > Organization > TEE | Cross-region backup policies |
+
+### 2.2 Team-Level Capabilities
+
+As a **Team Admin**, you can:
+
+| Capability | Location | Description |
+|------------|----------|-------------|
+| **Provision TEEs** | Team Settings > TEE | Create new TEE instances for the team |
+| **Select TEE Variant** | Team Settings > TEE > General | Vector-only, Vector+Graph, or Full Stack |
+| **Set Sync Strategy** | Team Settings > TEE > General | Persistent, ephemeral, or hybrid |
+| **Connect Storage Buckets** | Team Settings > TEE > Storage | Link S3/Azure/GCP buckets for direct ingestion |
+| **Manage Snapshots** | Team Settings > TEE > Snapshots | Create, restore, and schedule backups |
+| **Configure Thresholds** | Team Settings > TEE > Thresholds | Set soft/hard limits for TEE enforcement (including thin-client mode) |
+| **Stop/Restart TEEs** | Team Settings > TEE | Control TEE lifecycle |
+| **View Ingestion Jobs** | Team Settings > TEE > Jobs | Monitor file processing progress |
+
+---
+
+## 3. How TEEs Work: The Complete Picture
+
+### 3.1 Zero-Knowledge Architecture
+
+Agency's TEE implementation maintains zero-knowledge principles:
+
+**1. TEAM KEY GENERATION (Your Device)**
+- Team Key generated LOCALLY, never sent to Agency cloud
+- Stored encrypted in your OS keychain (Tauri secure storage)
+
+**2. TEE PROVISIONING (Your Cloud Account)**
+- Your local Python backend decrypts cloud credentials
+- Provisions TEE directly in YOUR AWS/Azure/GCP account
+- Agency cloud only sees encrypted credential blobs
+
+**3. KEY WRAPPING (Attestation-Based)**
+- TEE generates ephemeral key pair during boot
+- Your app verifies TEE attestation (PCR0 measurements)
+- Team Key wrapped with TEE public key, provisioned securely
+
+**4. DATA PROCESSING (Inside TEE)**
+- Data decrypted inside TEE's encrypted memory
+- Vector search, graph queries run in hardware isolation
+- Results encrypted before leaving TEE
+
+**What Agency Cloud NEVER Sees:**
+- Your Team Key
+- Plaintext documents
+- Plaintext cloud credentials
+- Search queries or results
+- LLM prompts, responses, or conversation context
+- Contents of TEE memory
+
+### 3.2 TEE Variants
+
+Choose the variant that matches your workload:
+
+| Variant | Label | RAM Needed | Capabilities | Best For |
+|---------|-------|------------|--------------|----------|
+| qdrant-only | **Vector Search** | 8GB+ | Qdrant vector database | Semantic search only |
+| qdrant-neo4j | **Vector + Graph** | 16GB+ | Qdrant + Neo4j graph | Search + entity relationships |
+| full | **Full Stack** | 32GB+ | Search + Graph + Ingestion + LLM Inference | Complete in-TEE processing |
+
+**Capability Tiers (for Full Stack):**
+
+| Tier | Description | Instance Type |
+|------|-------------|---------------|
+| **compute** | Ingestion and processing only | Standard CPU instances |
+| **inference** | CPU-based LLM inference | High-memory instances |
+| **inference_gpu** | GPU-accelerated inference | GPU instances (p3, g4dn, etc.) |
+
+**When to use each:**
+
+- **Vector Search:** You only need semantic search, minimal knowledge graph features
+- **Vector + Graph:** You want entity extraction and relationship queries
+- **Full Stack:** You want ingestion, inference, or both to run entirely inside the TEE
+
+### 3.3 Sync Strategies
+
+| Strategy | Description | Best For |
+|----------|-------------|----------|
+| **Persistent Sealed** | Encrypted snapshots preserved between sessions | Production workloads, quick restarts |
+| **Ephemeral Rebuild** | Full re-sync from local when TEE restarts | Maximum security, data freshness |
+| **Hybrid** | Snapshot + delta sync on restart | Balance of speed and freshness |
+
+---
+
+## 4. Use Case Examples
+
+### 4.1 "Infinite RAM" for Large Document Sets
+
+**Scenario:** Your team has indexed 200GB of legal documents. Local machines can't hold the full vector index in RAM.
+
+**How it works:**
+
+1. You provision a TEE with the **Vector + Graph** variant
+2. Agency detects your dataset exceeds local thresholds
+3. Vector indexes and knowledge graph are encrypted and offloaded to the TEE
+4. Local storage is freed—your laptop only holds encrypted backups
+5. When users search, queries route transparently to the TEE
+6. Results return encrypted, decrypted locally for display
+
+**What users see:** Faster search on larger datasets with no change to their workflow.
+
+### 4.2 Direct Ingestion from Unencrypted Storage
+
+**Scenario:** You have 500GB of documents in an S3 bucket. You want to index them without downloading to local devices.
+
+**How it works:**
+
+1. You provision a **Full Stack** TEE (includes ingestion capabilities)
+2. Connect your S3 bucket via **Team Settings > TEE > Storage**
+3. Provide read-only credentials (encrypted client-side, only TEE can decrypt)
+4. TEE downloads files directly to encrypted RAM (never touches disk)
+5. Documents are parsed, chunked, embedded, and indexed
+6. Processed data stays encrypted in the TEE
+7. Original files remain untouched in your bucket
+
+**Direct Ingestion Details:**
+- Files processed in RAM disk only (/dev/shm)
+- TEE never writes to source bucket
+- TEE never stores plaintext on disk
+- Supports 50+ file types: PDF, DOCX, XLSX, PPTX, TXT, MD, HTML, EML, MSG, PST, Images (OCR), Archives
+
+### 4.3 Private LLM Inference in TEE
+
+**Scenario:** Your compliance team needs to query sensitive documents with an LLM, but queries and responses must never be visible to cloud providers or Agency.
+
+**How it works:**
+
+1. You provision a **Full Stack** TEE with **inference** or **inference_gpu** capability
+2. TEE loads a supported LLM model into encrypted memory
+3. Users send chat/RAG queries through the Agency app
+4. Queries are encrypted, sent to TEE, decrypted inside the enclave
+5. LLM inference runs entirely in hardware-encrypted RAM
+6. Responses are encrypted before leaving the TEE
+7. Only your local app (with the Team Key) can decrypt responses
+
+**What stays private:**
+- Your prompts and questions
+- LLM responses and reasoning
+- Retrieved document chunks
+- The entire conversation context
+
+**Supported models:** Models that fit in TEE memory (7B-70B parameters depending on instance size). Contact support for model compatibility.
+
+### 4.4 Multi-User Collaboration with Shared TEE
+
+**Scenario:** A 10-person team needs to search a shared 100GB document corpus.
+
+**How it works:**
+
+1. One team member (or admin) provisions a TEE and loads the initial dataset
+2. TEE holds the shared index in encrypted memory
+3. All team members' apps verify TEE attestation on first connect
+4. Team Key is provisioned to TEE (wrapped for that specific TEE)
+5. Each user's searches route to the shared TEE
+6. Results encrypted in transit, decrypted locally per user
+
+**Benefits:**
+- No need to sync 100GB to each team member's device
+- Instant access for new team members
+- Centralized updates (ingest once, available to all)
+
+### 4.5 Thin-Client Mode (Zero Data on Endpoints)
+
+**Scenario:** Your security policy prohibits storing any data on user devices. Users should be able to search and chat, but all indexes, documents, and processing must remain in the TEE.
+
+**How it works:**
+
+1. **Org Admin** enables **Thin-Client Mode** in organization TEE policies
+2. **Team Admin** provisions a **Full Stack** TEE
+3. **Team Admin** sets threshold mode to **"TEE Required"** (hard threshold at 0 bytes)
+4. Users install Agency app—it connects to TEE but stores nothing locally
+5. All ingestion happens in TEE (via storage connections or direct upload)
+6. Users search and chat—queries go to TEE, results stream back encrypted
+7. Local app only holds session state and the Team Key (in OS keychain)
+
+**What stays on user devices:**
+- Agency app itself
+- Team Key (encrypted in OS keychain)
+- UI preferences and session tokens
+- **Nothing else**—no documents, no indexes, no caches
+
+**What stays in the TEE:**
+- All vector indexes (Qdrant)
+- All knowledge graphs (Neo4j)
+- All document content and metadata
+- LLM inference (if enabled)
+- Processing history and logs
+
+**Configuration checklist:**
+
+| Setting | Location | Value |
+|---------|----------|-------|
+| Thin-Client Mode | Settings > Organization > TEE | Enabled |
+| Local Storage Threshold | Team Settings > TEE > Thresholds | Hard limit: 0 bytes |
+| TEE Variant | Team Settings > TEE > General | Full Stack |
+| Sync Strategy | Team Settings > TEE > General | Persistent Sealed (recommended) |
+| Auto-Provision | Team Settings > TEE > General | Enabled (ensures TEE always available) |
+
+**User experience in Thin-Client mode:**
+- First launch: User authenticates, app provisions Team Key to TEE
+- Search/Chat: Works normally (slight latency increase ~50-100ms)
+- File upload: Files stream directly to TEE, never written locally
+- Offline: App shows "TEE Required" message—cannot work offline
+- App uninstall: Nothing sensitive left on device
+
+**Trade-offs:**
+- ✅ Maximum security—no data exfiltration risk from endpoints
+- ✅ Simplified compliance—devices are stateless
+- ✅ Easy onboarding—new users have instant access
+- ⚠️ Requires internet—no offline capability
+- ⚠️ TEE costs—must keep TEE running during work hours
+
+---
+
+## 5. Easy Setup: Step-by-Step Guide
+
+### 5.1 Prerequisites
+
+Before provisioning a TEE, ensure you have:
+
+| Requirement | Who Sets It Up | How |
+|-------------|----------------|-----|
+| **Cloud account** (AWS, Azure, or GCP) | Your IT Team | Create account at cloud provider |
+| **IAM credentials** | Your IT Team | See IAM Permissions Reference section |
+| **Agency cloud mode enabled** | Org Admin | Settings > Account > Enable Cloud |
+| **Cloud provider added** | Org Admin | Settings > Storage > Add Provider |
+
+### 5.2 Step 1: Configure Cloud Provider (Org Admin)
+
+1. Open **Agency Desktop App**
+2. Navigate to **Settings > Storage**
+3. Click **"Add Storage Provider"**
+4. Select your cloud provider (AWS, Azure, or GCP)
+5. Enter credentials:
+
+   **For AWS:**
+   - Access Key ID
+   - Secret Access Key
+   - Region (e.g., us-east-1)
+
+   **For Azure:**
+   - Subscription ID
+   - Tenant ID
+   - Client ID
+   - Client Secret
+   - Location (e.g., eastus)
+
+   **For GCP:**
+   - Service Account JSON (paste the full JSON)
+   - Zone (e.g., us-central1-a)
+
+6. Click **"Validate"** (tests credentials locally—never sent to Agency cloud)
+7. Click **"Save"** (credentials encrypted with Org Key before storage)
+
+### 5.3 Step 2: Provision a TEE (Team Admin)
+
+1. Navigate to **Team Settings > TEE**
+2. Click **"Provision TEE"**
+3. Select:
+   - **Cloud Provider:** Choose from configured providers
+   - **TEE Variant:** Vector Search, Vector + Graph, or Full Stack
+   - **Instance Size:** Based on your data volume
+
+4. Click **"Provision"**
+
+**Provisioning Progress:**
+
+You'll see a progress modal showing these stages:
+1. **Queued** – Request queued for processing
+2. **Launching** – Creating cloud instance in your account
+3. **Configuring** – Installing TEE software, starting enclave
+4. **Attesting** – Verifying hardware measurements match known-good values
+5. **Syncing** – Provisioning Team Key, loading data
+6. **Ready** – TEE operational
+
+**Important:** Your credentials are decrypted locally. Keep the app open during provisioning.
+
+**Typical times:** 3-8 minutes depending on cloud provider and variant.
+
+### 5.4 Step 3: Verify and Start Using
+
+Once provisioning completes:
+
+1. TEE appears in your **Team Settings > TEE** list with status **Ready**
+2. Your local indexes are encrypted and offloaded automatically
+3. Search and chat continue to work—queries route to TEE transparently
+4. All team members can now use the TEE (after initial attestation verification)
+
+---
+
+## 6. Advanced Configuration
+
+### 6.1 Organization TEE Policies
+
+Navigate to **Settings > Organization > TEE** to configure:
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| **Max TEEs per Org** | Total TEE instances allowed | 10 |
+| **Max Concurrent per Team** | TEEs per team | 2 |
+| **Allowed Regions** | Restrict to specific regions | All regions |
+| **Attestation Mode** | cloud_vendor or multi_root | cloud_vendor |
+| **Disaster Recovery** | Enable cross-region snapshots | Disabled |
+| **Thin-Client Mode** | Force all teams to use TEE-only (no local storage) | Disabled |
+
+### 6.2 Key Management Service (KMS) Integration
+
+For enhanced key security, configure customer-managed KMS:
+
+| KMS Mode | Description | Use Case |
+|----------|-------------|----------|
+| **None** | Session keys derived from Team Key | Default, portable snapshots |
+| **Agency Managed** | Agency rotates encryption keys | Compliance without KMS setup |
+| **Customer Managed** | Your KMS keys encrypt TEE data | Maximum control |
+
+**To configure Customer Managed KMS:**
+
+1. Create a KMS key in your cloud provider
+2. Navigate to **Settings > Organization > TEE**
+3. Set **KMS Mode** to **Customer Managed**
+4. Enter your KMS key ARN/ID:
+   - **AWS:** arn:aws:kms:us-east-1:123456789:key/...
+   - **Azure:** Key Vault key identifier
+   - **GCP:** projects/.../locations/.../keyRings/.../cryptoKeys/...
+
+### 6.3 Storage Bucket Connections
+
+Connect existing cloud storage for direct TEE ingestion:
+
+1. Navigate to **Team Settings > TEE > Storage**
+2. Click **"Connect Bucket"**
+3. Complete the 4-step wizard:
+
+**Step 1 – Provider:**
+- Select AWS S3, S3-Compatible, Azure Blob, or GCP Storage
+- Enter bucket name and region
+
+**Step 2 – Credentials:**
+- Enter read-only credentials
+- Click **"Test Connection"** (validated locally)
+
+**Step 3 – Options:**
+- **Storage Strategy:**
+  - *Reference Only:* Index files, don't copy
+  - *Duplicate to BYOS:* Process and store encrypted copies
+- **Filters:** File prefix, extensions, size limits
+- **Sync Mode:** Once, Continuous, or Scheduled
+
+**Step 4 – Review and Create:**
+- Verify configuration
+- Credentials wrapped with TEE public key (only TEE can unwrap)
+- Click **"Create Connection"**
+
+### 6.4 Snapshot Management
+
+**Automatic Snapshots:**
+
+1. Navigate to **Team Settings > TEE > Snapshots**
+2. Enable **"Automatic Snapshots"**
+3. Set interval (6 hours to weekly)
+4. Configure retention:
+   - Keep last N snapshots
+   - Maximum age in days
+
+**On-Demand Snapshots:**
+
+1. Click **"Create Snapshot"** in the Snapshots tab
+2. Snapshot created immediately
+3. Appears in snapshot list with timestamp
+
+**Restoring from Snapshot:**
+
+1. Select snapshot from list
+2. Click **"Restore"**
+3. Confirm (this replaces current TEE data)
+4. TEE loads snapshot data
+
+### 6.5 Custom Instance Sizing
+
+Override automatic sizing for specific requirements:
+
+| Size | vCPU | RAM | Data Volume | Monthly Cost (approx) |
+|------|------|-----|-------------|----------------------|
+| Small | 2 | 4GB | 50GB | $50-80 |
+| Medium | 4 | 8GB | 100GB | $100-150 |
+| Large | 8 | 16GB | 200GB | $200-300 |
+| X-Large | 16 | 32GB | 500GB | $400-600 |
+
+*Costs vary by cloud provider, region and your negotiated rates.*
+
+---
+
+## 7. Managing the TEE Lifecycle
+
+### 7.1 Monitoring Status and Health
+
+**TEE Status Indicators:**
+
+| Status | Meaning |
+|--------|---------|
+| **Ready** | TEE operational, accepting requests |
+| **Syncing** | Loading data or processing snapshot |
+| **Busy** | High load (more than 80% capacity) |
+| **Offline** | TEE stopped or unreachable |
+| **Failed** | Provisioning or runtime error |
+
+**View status at:** Team Settings > TEE (instance list)
+
+### 7.2 Tracking Usage and Progress
+
+**Ingestion Job Monitoring:**
+
+1. Navigate to **Team Settings > TEE > Jobs** (or click jobs badge)
+2. View:
+   - Processing jobs (active)
+   - Completed jobs
+   - Failed jobs (with error details)
+
+**Job Details Include:**
+- File name/path (encrypted display)
+- Status (processing/completed/failed)
+- Chunks processed
+- Vectors created
+- Processing time
+
+**Connection Stats:**
+
+For storage bucket connections, view:
+- Files discovered
+- Files processed
+- Files failed
+- Files skipped (duplicates or filtered)
+- Total bytes processed
+- Last sync timestamp
+
+### 7.3 Stopping and Restarting TEEs
+
+**To Stop a TEE:**
+
+1. Navigate to **Team Settings > TEE**
+2. Find the TEE in the list
+3. Click the **Power** button
+4. Confirm in the dialog
+
+**What happens when stopped:**
+- Encrypted snapshot created automatically (if enabled)
+- Cloud instance terminated
+- You stop paying compute costs
+- Storage costs continue for snapshots
+
+**To Restart:**
+
+1. Navigate to **Team Settings > TEE**
+2. Click **"Provision TEE"** (or restart button if available)
+3. Select same configuration
+4. TEE provisions fresh, restores from latest snapshot
+
+### 7.4 Disaster Recovery
+
+If enabled at org level:
+
+1. Snapshots replicated to secondary region
+2. If primary TEE fails, restore from secondary
+3. Configure at **Settings > Organization > TEE > Disaster Recovery**
+
+---
+
+## 8. What End Users Experience
+
+### 8.1 Transparent Offloading
+
+When a TEE is active, end users notice:
+
+| Aspect | User Experience |
+|--------|-----------------|
+| **Search** | Works identically—may be faster for large datasets |
+| **Chat/RAG** | Same interface, TEE handles retrieval and optionally inference |
+| **LLM Inference** | If enabled, queries processed in TEE—responses may be slightly slower but fully private |
+| **File Upload** | Small files: local processing; Large files: routed to TEE |
+| **First Connect** | Brief attestation verification (1-2 seconds) |
+
+**Users do NOT need to:**
+- Configure anything
+- Know that TEE is being used
+- Change their workflow
+
+### 8.2 Direct TEE Ingestion
+
+For storage connections, users see:
+
+1. **New document source** appears in their document list
+2. Documents from connected buckets are searchable
+3. **"TEE Processing"** badge indicates origin
+4. Search results may show cloud storage paths
+
+**Users can:**
+- Search across both local and TEE-ingested documents
+- Chat with documents from any source
+- View document previews (rendered in TEE, encrypted in transit)
+
+---
+
+## 9. Cost Management
+
+### 9.1 Understanding TEE Costs
+
+TEE costs come from two sources:
+
+| Cost Type | What It Is | Billed By |
+|-----------|------------|-----------|
+| **Compute** | VM running time (per hour) | Your cloud provider |
+| **Storage** | Snapshot storage, data volumes | Your cloud provider |
+
+**You pay your cloud provider directly**—Agency does not mark up or bill for TEE infrastructure.
+**Agency TEE Management Fee**-Agency bills you a flat per TEE management per team fee for any monthly usage.
+
+**Cost optimization tips:**
+- Stop TEEs when not in use (snapshots preserved)
+- Use smaller instances for smaller datasets
+- Schedule automatic shutdown during off-hours
+- Use ephemeral mode for infrequent access (no snapshot storage)
+
+### 9.2 Using the Cost Dashboard
+
+Navigate to **Settings > Organization > Costs** (Billing Admin required):
+
+1. **Set Your Pricing:** Enter your negotiated rates per provider
+2. **View by Team:** See cost breakdown per team
+3. **Historical Trends:** Monthly compute and storage costs
+4. **Export:** Download cost reports
+
+**Note:** All calculations happen client-side. Agency never sees your actual cloud costs.
+
+---
+
+## 10. IAM Permissions Reference
+
+### 10.1 AWS Permissions
+
+**For TEE Provisioning (EC2 Nitro Enclaves):**
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "TEEProvisioning",
+            "Effect": "Allow",
+            "Action": [
+                "ec2:RunInstances",
+                "ec2:DescribeInstances",
+                "ec2:TerminateInstances",
+                "ec2:CreateTags",
+                "ec2:DescribeImages",
+                "ec2:DescribeSecurityGroups",
+                "ec2:DescribeSubnets",
+                "ec2:DescribeVpcs",
+                "ssm:GetParameter"
+            ],
+            "Resource": "*"
+        }
+    ]
+}
+```
+
+**For Direct Ingestion (Source Bucket):**
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:GetObject",
+                "s3:ListBucket"
+            ],
+            "Resource": [
+                "arn:aws:s3:::your-source-bucket",
+                "arn:aws:s3:::your-source-bucket/*"
+            ]
+        }
+    ]
+}
+```
+
+### 10.2 Azure Permissions
+
+**Required Roles:**
+- Virtual Machine Contributor on resource group
+- Network Contributor on resource group (auto-creates VNet/NSG)
+
+**For Direct Ingestion:**
+- Storage Blob Data Reader on the container
+
+### 10.3 GCP Permissions
+
+**Required Roles:**
+- roles/compute.instanceAdmin.v1
+- roles/compute.securityAdmin
+- roles/iam.serviceAccountUser
+
+**For Direct Ingestion:**
+- roles/storage.objectViewer on the bucket
+
+---
+
+## 11. Troubleshooting
+
+### 11.1 Common Issues
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| **Provisioning times out** | Insufficient permissions | Check IAM permissions |
+| **"No providers configured"** | Missing cloud provider | Org Admin: Add provider in Settings > Storage |
+| **TEE stuck at "Booting"** | Instance type unavailable | Try different region or instance size |
+| **Connection test fails** | Wrong credentials | Re-enter credentials, check bucket name |
+| **Snapshot restore fails** | Incompatible version | Contact support for migration |
+
+### 11.2 Attestation Failures
+
+If attestation fails:
+
+1. **Check measurements:** TEE image may have been updated
+   - Agency publishes new measurements with releases
+   - Your app verifies against known-good values
+
+2. **Retry provisioning:** Transient infrastructure issues
+
+3. **Check for updates:** Ensure Agency app is up to date
+
+4. **Contact support:** If failures persist
+
+---
+
+## 12. FAQ
+
+**Q: Does Agency have access to my data in the TEE?**
+
+A: No. Agency cloud never receives your Team Key. TEE memory is hardware-encrypted. Only your app (with the Team Key) can decrypt TEE responses.
+
+**Q: What happens if my TEE crashes?**
+
+A: If snapshots are enabled, data is preserved. Provision a new TEE and restore from the latest snapshot. If ephemeral mode, you'll need to re-sync from local or source buckets.
+
+**Q: Can multiple teams share a TEE?**
+
+A: No. Each TEE is dedicated to one team for isolation. Teams cannot access each other's TEE data.
+
+**Q: How do I delete all TEE data?**
+
+A: Stop the TEE (terminates instance), then delete all snapshots from the Snapshots tab. Cloud storage is in your account—delete volumes directly if needed.
+
+**Q: Can I use TEEs in air-gapped environments?**
+
+A: Not currently. TEEs require network connectivity for attestation and sync. Contact us for on-premises TEE options.
+
+**Q: What cloud regions are supported?**
+
+A: Any region that supports:
+- AWS: Nitro Enclaves (most regions)
+- Azure: SEV-SNP Confidential VMs (select regions)
+- GCP: Confidential VMs (most regions)
+
+**Q: Which region is ideal?**
+
+A: You will want to provision your TEE instances as geographically close to your largest user base as possible to provide the best overall experience to your users.
+
+**Q: How do I estimate costs before provisioning?**
+
+A: Use the Cost Dashboard with your pricing. A typical medium TEE running 8 hours/day costs around $50-100/month. Actual costs depend on usage patterns.
+
+**Q: Can I run LLM inference in the TEE?**
+
+A: Yes. Provision a Full Stack TEE with the **inference** or **inference_gpu** capability tier. The LLM runs entirely inside the enclave—your prompts, responses, and conversation context never leave encrypted memory. Supported model sizes depend on instance RAM (typically 7B-70B parameters).
+
+**Q: Is TEE inference slower than cloud inference?**
+
+A: Slightly. TEE inference adds ~100-200ms of overhead for encryption/decryption. For GPU instances, actual inference speed is comparable to standard cloud. The tradeoff is complete privacy—even the cloud provider cannot see your queries.
+
+**Q: What is Thin-Client mode?**
+
+A: Thin-Client mode configures Agency so that no data is stored on user devices. All documents, indexes, and processing remain in the TEE. Users' laptops only hold the app, the Team Key (in OS keychain), and session state. This is ideal for organizations with strict endpoint security policies or BYOD environments where you can't trust the device.
+
+**Q: Can users work offline in Thin-Client mode?**
+
+A: No. Thin-Client mode requires a constant connection to the TEE. If the TEE is unreachable, users see a "TEE Required" message and cannot search or chat. For offline capability, use the default hybrid mode where some data is cached locally.
+
+---
+
+## Summary
+
+1. **TEEs extend your capacity** – Handle datasets too large for local memory
+2. **Zero-knowledge preserved** – Your keys and data stay private
+3. **Runs in YOUR cloud** – You control infrastructure and costs
+4. **Easy setup** – Configure provider once, provision in minutes
+5. **Transparent to users** – Search and chat work identically
+6. **Direct ingestion** – Process cloud-stored documents without downloading
+7. **Thin-client option** – Keep all data off endpoints for maximum security
+8. **Flexible lifecycle** – Start, stop, snapshot, restore as needed
+
+For additional help, visit the Agency Documentation at https://docs.getagency.app or contact support.
+
