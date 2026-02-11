@@ -9,3 +9,4 @@ This repo contains the core public documentation for Agency.
  6. Decision tree → how to decide fast and consistently
  7. Security Deep-dive → how is Agency secure
  8. Architectural Overview → how does Agency work
+ 9. Trusted Execution Environment Guide → detailed user guide on TEEs
